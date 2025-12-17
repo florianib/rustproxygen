@@ -112,19 +112,19 @@ fn main() -> std::io::Result<()> {
     let dll_name = args.dll.file_stem().unwrap().to_str().unwrap();
 
     let pe_file = winpe::parse(dll_data);
-    if pe_file.x64 {
+    if pe_file.is_x64() {
         println!("Parsed an x64 PE file");
     } else {
         println!("Parsed an x86 PE file");
     }
 
-    let export_table = pe_file.export_table;
+    let export_table = pe_file.get_export_table();
     println!(
         "Found {} exported functions",
         export_table.array_of_names.len()
     );
 
-    let function_exports = export_table
+    let function_exports = &export_table
         .array_of_names
         .iter()
         .zip(export_table.array_of_ordinals.iter())
