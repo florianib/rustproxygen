@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::Write;
 use std::str;
 
-pub mod pe_parser;
+mod winpe;
 
 #[derive(Default)]
 struct EncArgs {
@@ -111,7 +111,7 @@ fn main() -> std::io::Result<()> {
 
     let file_name = args.dll.file_stem().unwrap().to_str().unwrap();
 
-    let pe_file = pe_parser::parse(contents);
+    let pe_file = winpe::parse(contents);
     if pe_file.x64 {
         println!("Parsed an x64 PE file");
     } else {
