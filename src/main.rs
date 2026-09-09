@@ -118,9 +118,25 @@ fn main() -> std::io::Result<()> {
             eprintln!("Error: No shellcode provided. Use --shellcode to specify a shellcode file.");
             std::process::exit(1);
         }
+        
+        // Encryption is required when no DLL is provided
+        if args.encryption.is_none() {
+            eprintln!("Error: --encryption flag is required when no DLL is provided. Use: --encryption aes");
+            std::process::exit(1);
+        }
+        
         println!("No DLL specified - encrypting shellcode only");
 
-        let encryption_algo = get_encryption_algo(&args.encryption, &mut shellcode, &mut asset_path)?;
+        // Only AES encryption is supported for now
+        if args.encryption.as_ref().unwrap().to_lowercase() != "aes" {
+            eprintln!("Error: Unknown encryption algorithm. Use: --encryption aes");
+            std::process::exit(1);
+        }
+
+        // Encrypt the shellcode and get the key/nonce
+        let encryption_args = encrypt_aes(&mut shellcode);
+        
+        // Generate shellcode.rs
         let shellcode_template = load_asset_file(&mut asset_path, "shellcode_template.rs")?;
         let shellcode_str = join_vec(&shellcode, ",");
 
@@ -130,9 +146,13 @@ fn main() -> std::io::Result<()> {
 
         write_output_file(&mut output, "shellcode.rs", shellcode_output.as_bytes())?;
 
-        let shellcode_stub_template = load_asset_file(&mut asset_path, "shellcode_stub.rs")?;
-        let shellcode_stub = shellcode_stub_template.replace("{ENC}", &encryption_algo);
-        write_output_file(&mut output, "shellcode_stub.rs", shellcode_stub.as_bytes())?;
+        // Generate decryption.rs with the key and nonce
+        let decryption_template = load_asset_file(&mut asset_path, "decryption.rs")?;
+        let decryption_output = decryption_template
+            .replace("{KEY}", join_vec(&encryption_args.key, ", ").as_str())
+            .replace("{NONCE}", join_vec(&encryption_args.nonce, ", ").as_str());
+
+        write_output_file(&mut output, "decryption.rs", decryption_output.as_bytes())?;
 
         println!("Shellcode encryption complete!");
         return Ok(());
