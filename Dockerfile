@@ -1,30 +1,35 @@
-FROM dhi.io/alpine-base:3.23-alpine3.23-dev AS builder
+FROM rust:alpine AS builder
 
 WORKDIR /build
 
-# Install Rust and dependencies
+# Install build dependencies
 RUN apk add --no-cache \
-    rust \
-    cargo \
-    musl-dev \
-    gcc \
-    g++ \
-    make \
-    pkgconfig
+    build-base \
+    git \
+    openssl-dev \
+    openssl-libs-static \
+    pkgconfig \
+    perl \
+    musl-dev
 
 # Copy the project files
 COPY . .
 
-# Build the release binary
-RUN cargo build --release
+# Build the release binary, statically linked against musl
+RUN cargo build --release --target x86_64-unknown-linux-musl
 
-# Final stage
+# Final runtime image
 FROM dhi.io/alpine-base:3.23-alpine3.23-dev
 
 WORKDIR /app
 
+# Install runtime dependencies
+RUN apk add --no-cache \
+    ca-certificates && \
+    rm -rf /var/cache/apk/*
+
 # Copy the compiled binary from builder
-COPY --from=builder /build/target/release/rustproxygen /app/rustproxygen
+COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/rustproxygen /app/rustproxygen
 
 # Copy assets directory
 COPY --from=builder /build/assets /app/assets
